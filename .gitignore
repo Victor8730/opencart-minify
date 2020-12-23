@@ -1,0 +1,6 @@
+#phpstorm project folder
+.idea
+#test file for OCv3
+wps_minifi_v3.ocmod.zip
+#project-file php
+my-minify.php

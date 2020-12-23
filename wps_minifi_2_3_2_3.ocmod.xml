@@ -1,0 +1,324 @@
+<?xml version="1.0" encoding="utf-8"?>
+<modification>
+  <name>Минимимзатор JS, CSS, HTML</name>
+  <code>wps_minify</code>
+  <version>1.0.5</version>
+  <author>WebpageStudio</author>
+  <link>https://webpagestudio.net</link>
+  <file path="system/framework.php">
+   <operation>
+    <search><![CDATA[
+      $registry = new Registry();
+      ]]></search>
+      <add position="before"><![CDATA[
+        global $registry;
+        ]]></add>
+      </operation>
+    </file>  
+    <file path="system/library/response.php">
+      <operation>
+        <search><![CDATA[
+          public function output() {
+          ]]></search>
+          <add position="after"><![CDATA[
+
+if (!isset($_GET['wps_no_minimized']) && !isset($_GET['token'])) {
+
+    /**
+     * Params
+     * $minifyHtml - if you want to get html in one line, 0-no, 1 - yes
+     * $delCommentsHtml - if you want delete html comments, 0-no, 1 - yes
+     * $minifyInternalScripts - minimize scripts what are in the body of the page, 0-no, 1 - yes
+     * $minifyGzip - in progress ... if you want compress minify ...
+     */
+    global $registry;
+
+    $db = $registry->get('db');
+    $config = $registry->get('config');
+    $request = $registry->get('request');
+    $minifyHtml = 1;
+    $delCommentsHtml = 1;
+    $minifyInternalScripts = 1;
+    $minifyGzip = 0;
+
+    /**
+     * First array with scripts that do not need to be deleted, add only file name
+     * the second array is automatically loaded
+     */
+    $arrayNoDeleteJs = [
+        'jquery-2.1.1.min.js',
+    ];
+    $arrayNoDeleteJsShow = [];
+
+
+    //minimized CSS and JS update
+    if (isset($_GET['clr_minify'])) {
+        $db->query("DELETE FROM `" . DB_PREFIX . "setting` WHERE `code` = 'wps_minimization_css' OR `code` = 'wps_minimization_js'");
+    }
+    if (!isset($request->get['route'])) $request->get['route'] = '';
+    if (!preg_match('/\/admin\//', $_SERVER['REQUEST_URI']) && !preg_match('/checkout/', $request->get['route']) && !preg_match('/account/', $request->get['route']) && !preg_match('/feed/', $request->get['route']) && $request->get['route'] != 'checkout/simplecheckout') {
+        //CSS and JS minimization
+        $wpsOutput = $this->output;
+
+        $res_css_array = array();
+        $res_js_array = array();
+
+        preg_match_all("/<link.*?href=\"(.*?\.css.*?)\".*?>/", $wpsOutput, $css);
+        preg_match_all("/<script.*?src=\"([^(https|\/\/)].*?\.js.*?)\".*?><\/script>/", $wpsOutput, $js);
+        preg_match_all("/(<script type=\"text\/javascript\">|<script>)(.*?)<\/script>/is", $wpsOutput, $js_code);
+
+        //get minimized settings
+        $wps_query = $db->query("SELECT * FROM `" . DB_PREFIX . "setting` WHERE code = 'wps_minimization_css' OR code = 'wps_minimization_js'");
+
+        foreach ($wps_query->rows as $result) {
+            if (!$result['serialized']) {
+                $config->set($result['key'], $result['value']);
+            } else {
+                $config->set($result['key'], json_decode($result['value'], true));
+            }
+        }
+        //minimized CSS files
+        $saved_minimization_data_css = $config->get('wps_minimization_css');
+        if (empty($saved_minimization_data_css)) $saved_minimization_data_css = array();
+
+        $is_new_css_in_page = false;
+        if ($css['1']) foreach ($css['1'] as $k => $l) {
+            $l = preg_replace("/css\?.*?$/", 'css', $l);
+            $l = str_replace(array(HTTP_SERVER, HTTPS_SERVER), '', $l);
+            $l = preg_replace("/\/?catalog\//is", DIR_APPLICATION, $l);
+            if (file_exists($l)) {
+                $the_stat = stat($l);
+                $mtime = $the_stat['mtime'];
+                $res_css_array[hash('md5', $l)]['src'] = $l;
+                $res_css_array[hash('md5', $l)]['mtime'] = $mtime;
+
+                if (!array_key_exists(hash('md5', $l), $saved_minimization_data_css) && !empty($saved_minimization_data_css)) {
+                    $is_new_css_in_page = true;
+                    $res_css_array_new[hash('md5', $l)]['src'] = $l;
+                    $res_css_array_new[hash('md5', $l)]['mtime'] = $mtime;
+                }
+            }
+        }
+
+        if (empty($saved_minimization_data_css)) {
+            $res_css_array_serialize = json_encode($res_css_array);
+            $db->query("INSERT INTO `" . DB_PREFIX . "setting` SET `code` = 'wps_minimization_css',`key` = 'wps_minimization_css',`value` = '" . $db->escape($res_css_array_serialize) . "',`serialized` = '1'");
+
+            require_once(dirname(DIR_APPLICATION) . '/minify/vendor/autoload.php');
+
+            $minifier = new MatthiasMullie\Minify\CSS;
+
+            if ($res_css_array) foreach ($res_css_array as $css_item) {
+                $sourcePath = $css_item['src'];
+                $minifier->add($sourcePath);
+            }
+
+            $minifiedPath = dirname(DIR_APPLICATION) . '/css/css-minified.css';
+            $minifier->minify($minifiedPath);
+
+        } elseif ($is_new_css_in_page) {
+            $saved_minimization_data_css = array_merge($saved_minimization_data_css, $res_css_array_new);
+
+            require_once(dirname(DIR_APPLICATION) . '/minify/vendor/autoload.php');
+
+            $minifier = new MatthiasMullie\Minify\CSS;
+
+            if ($saved_minimization_data_css) foreach ($saved_minimization_data_css as $css_item) {
+                $sourcePath = $css_item['src'];
+                $minifier->add($sourcePath);
+            }
+
+            $minifiedPath = dirname(DIR_APPLICATION) . '/css/css-minified.css';
+            $minifier->minify($minifiedPath);
+
+            $res_css_array_serialize = json_encode($saved_minimization_data_css);
+            $db->query("UPDATE `" . DB_PREFIX . "setting` SET `value` = '" . $db->escape($res_css_array_serialize) . "' WHERE code = 'wps_minimization_css'");
+        }
+
+        //minimized JS files
+        $saved_minimization_data_js = $config->get('wps_minimization_js');
+
+        if (empty($saved_minimization_data_js)) {
+            $saved_minimization_data_js = [];
+        }
+
+        $is_new_js_in_page = false;
+
+        if ($js['1']) {
+            foreach ($js['1'] as $k => $l) {
+                $checkNoJs = 0;
+
+                foreach ($arrayNoDeleteJs as $noJs) {
+                    if (strpos($l, $noJs) != false) {
+                        $arrayNoDeleteJsShow[] = $l;
+                        $checkNoJs = 1;
+                    }
+                }
+
+                if ($checkNoJs === 0) {
+                    $l = preg_replace("/js\?.*?$/", 'js', $l);
+                    $l = str_replace(array(HTTP_SERVER, HTTPS_SERVER), '', $l);
+                    $l = preg_replace("/\/?catalog\//is", DIR_APPLICATION, $l);
+                    if (file_exists($l)) {
+                        $the_stat = stat($l);
+                        $mtime = $the_stat['mtime'];
+                        $res_js_array[hash('md5', $l)]['src'] = $l;
+                        $res_js_array[hash('md5', $l)]['mtime'] = $mtime;
+
+                        if (!array_key_exists(hash('md5', $l), $saved_minimization_data_js) && !empty($saved_minimization_data_js)) {
+                            $is_new_js_in_page = true;
+                            $res_js_array_new[hash('md5', $l)]['src'] = $l;
+                            $res_js_array_new[hash('md5', $l)]['mtime'] = $mtime;
+                        }
+                    }
+                }
+            }
+        }
+
+
+        if (empty($saved_minimization_data_js)) {
+
+            $res_js_array_serialize = json_encode($res_js_array);
+
+            $db->query("INSERT INTO `" . DB_PREFIX . "setting` SET `code` = 'wps_minimization_js',`key` = 'wps_minimization_js',`value` = '" . $db->escape($res_js_array_serialize) . "',`serialized` = '1'");
+
+            require_once(dirname(DIR_APPLICATION) . '/minify/vendor/autoload.php');
+
+            $minifier = new MatthiasMullie\Minify\JS;
+
+            if (!empty($res_js_array)) {
+                foreach ($res_js_array as $js_item) {
+                    $sourcePath = $js_item['src'];
+                    $minifier->add($sourcePath);
+                }
+            }
+
+            $minifiedPath = dirname(DIR_APPLICATION) . '/js/js-minified.js';
+            $minifier->minify($minifiedPath);
+
+            if($minifyGzip === 1){
+                //$minifier->gzip($minifiedPath);
+            }
+
+
+        } elseif ($is_new_js_in_page) {
+            $saved_minimization_data_js = array_merge($saved_minimization_data_js, $res_js_array_new);
+
+            require_once(dirname(DIR_APPLICATION) . '/minify/vendor/autoload.php');
+
+            $minifier = new MatthiasMullie\Minify\JS;
+
+            if ($saved_minimization_data_js) {
+                foreach ($saved_minimization_data_js as $js_item) {
+                    $sourcePath = $js_item['src'];
+                    $minifier->add($sourcePath);
+                }
+            }
+
+            $minifiedPath = dirname(DIR_APPLICATION) . '/js/js-minified.js';
+            $minifier->minify($minifiedPath);
+
+            if($minifyGzip === 1) {
+                //$minifier->gzip($minifiedPath);
+            }
+
+            $res_js_array_serialize = json_encode($saved_minimization_data_js);
+            $db->query("UPDATE `" . DB_PREFIX . "setting` SET `value` = '" . $db->escape($res_js_array_serialize) . "' WHERE code = 'wps_minimization_js'");
+        }
+
+        /**
+         * add time label in JS and CSS for browser cash update
+         * */
+        $the_stat_css = stat(dirname(DIR_APPLICATION) . '/css/css-minified.css');
+        $the_stat_js = stat(dirname(DIR_APPLICATION) . '/js/js-minified.js');
+        $mtime_css = $the_stat_css['mtime'];
+        $mtime_js = $the_stat_js['mtime'];
+
+        $js_code_row = '';
+        if (!empty($js_code['2'])) {
+            require_once(dirname(DIR_APPLICATION) . '/minify/vendor/autoload.php');
+            $minifier_code = new MatthiasMullie\Minify\JS;
+            $js_code_row = implode("\n", $js_code['2']);
+            $js_code_row = str_replace(array('<!--', '-->'), '', $js_code_row);
+            $minifier_code->add($js_code_row);
+
+            if ($minifyInternalScripts === 1) {
+                $minifiedPathInternal = dirname(DIR_APPLICATION) . '/js/js-minified-internal.js';
+                $statJsInternal = stat($minifiedPathInternal);
+                $minifier_code->minify($minifiedPathInternal);
+                $js_code_row = '<script src="/js/js-minified-internal.js?ver=' . $statJsInternal['mtime'] . '"></script>';
+            } else {
+                $js_code_row = $minifier_code->minify();
+                $js_code_row = '<script>' . $js_code_row . '</script>';
+            }
+
+            //$js_code_row = '<script type="text/javascript">'.implode("\n",$js_code['2']).'</script>';
+        }
+
+        /**
+         * remove all native JS and CSS
+         * */
+        $wpsOutput = preg_replace("/<link.*?href=\"(.*?\.css.*?)\".*?>\n?/", '', $wpsOutput);
+        $wpsOutput = preg_replace("/<script.*?src=\"([^(https|\/\/)].*?\.js.*?)\".*?><\/script>\n?/", '', $wpsOutput);
+        $wpsOutput = preg_replace("/<script type=\"text\/javascript\">.*?<\/script>/is", '', $wpsOutput);
+        $wpsOutput = preg_replace("/<script>.*?<\/script>/is", '', $wpsOutput);
+
+
+        /**
+         * Add and return the necessary scripts back
+         */
+        $jsNecessary = '';
+
+        foreach ($arrayNoDeleteJsShow as $showJs) {
+            $jsNecessary .= '<script src="' . $showJs . '"></script>';
+        }
+
+        $jsMinified = '<script src="/js/js-minified.js?ver=' . $mtime_js . '"></script>';
+
+        $css_row = '<link rel="stylesheet" type="text/css" href="/css/css-minified.css?ver=' . $mtime_css . '" />';
+
+
+        /**
+         * make HTML in one line
+         * */
+        if ($minifyHtml === 1) {
+            $wpsOutput = preg_replace("/(\n)+/", "\n", $wpsOutput);
+            $wpsOutput = preg_replace("/\r\n+/", "\n", $wpsOutput);
+            $wpsOutput = preg_replace("/\n(\t)+/", "\n", $wpsOutput);
+            $wpsOutput = preg_replace("/\n(\ )+/", "\n", $wpsOutput);
+            $wpsOutput = preg_replace("/\>(\n)+</", '><', $wpsOutput);
+            $wpsOutput = preg_replace("/\>\r\n</", '><', $wpsOutput);
+            $wpsOutput = preg_replace("/\s+/u", ' ', $wpsOutput);
+            $wpsOutput = preg_replace("/\n/", '', $wpsOutput);
+        }
+
+        /**
+         * Clear html from comments
+         */
+        if ($delCommentsHtml === 1) {
+            $wpsOutput = preg_replace('/<!--(.*?)-->/', '', $wpsOutput);
+        }
+
+        /**
+         * add CSS to HEADER
+         * */
+        $wpsOutput = preg_replace(
+            "/(<\/head>)/",
+            "$css_row$jsNecessary$1",
+            $wpsOutput
+        );
+
+        /**
+         * add JS before </body>
+         * */
+        $wpsOutput = preg_replace("/(<\/body>)/", "$jsMinified$js_code_row$1", $wpsOutput);
+
+        $this->output = $wpsOutput;
+    }
+}
+
+
+           ]]></add>
+         </operation>
+       </file>  
+     </modification>
